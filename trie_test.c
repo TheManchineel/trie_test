@@ -1,7 +1,26 @@
+/***************************************************
+                         _     _                 _
+  /\/\   __ _ _ __   ___| |__ (_)_ __   ___  ___| |
+ /    \ / _` | '_ \ / __| '_ \| | '_ \ / _ \/ _ \ |
+/ /\/\ \ (_| | | | | (__| | | | | | | |  __/  __/ |
+\/    \/\__,_|_| |_|\___|_| |_|_|_| |_|\___|\___|_|
+
+***************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+
+/*****
+"L'uso delle parole è essenziale, sensuale, senza un senso sensoriale.
+// È tentare di internare in te il male per un test intenzionale."
+-- Tedua, "Step by Step" feat. Bresh da Orange County Mixtape (2016)
+                                                                  *****/
+
+int courier_interval;
+int courier_capacity;
+int current_time = 0;
 
 #ifndef NO_METRICS
 int numero_ricette = 0;
@@ -11,16 +30,22 @@ int numero_eliminazioni_ricette = 0;
 int numero_trie_nodes = 0;
 #endif
 
-typedef struct Ingredient
+typedef struct IngredientLot
 {
   int quantity;
   int expiration_time;
-  struct Ingredient *next_lot;
+  struct IngredientLot *next_lot;
+} IngredientLot_t;
+
+typedef struct Ingredient
+{
+  int total_quantity;
+  struct IngredientLot_t *lot_list;
 } Ingredient_t;
 
 typedef struct RecipeIngredient
 {
-  Ingredient_t **lot_list;
+  Ingredient_t *ingredient;
   int quantity;
   struct RecipeIngredient *next_ingredient;
 } RecipeIngredient_t;
@@ -133,7 +158,7 @@ TrieNode_t *trie_node_find_or_create(TrieNode_t *trie_root, char *key, bool crea
   return current_node;
 }
 
-// Returns 1 if actually deleted, 0 if not found
+// Returns true if actually deleted, false if not found
 bool trie_destination_delete_if_exists(TrieNode_t *trie_root, char *key)
 {
   TrieNode_t *current_node = trie_root;
@@ -182,17 +207,32 @@ bool trie_destination_delete_if_exists(TrieNode_t *trie_root, char *key)
   return false;
 }
 
+Ingredient_t *ingredient_find_or_create(TrieNode_t *trie_root, char *key)
+{
+  TrieNode_t *node = trie_node_find_or_create(trie_root, key, true);
+  if (!node->dest)
+  {
+    node->dest = calloc(sizeof(Ingredient_t), 1);
+    // (Implicitly zeroed)
+    // ((Ingredient_t *)node->dest)->total_quantity = 0;
+  }
+  return node->dest;
+}
+
 int main()
 {
-  int current_time = 0;
   char recipe_name[256];
   char token[64];
 
   FILE *file = fopen("/Users/manchineel/Downloads/archivio_materiali/test_cases_pubblici/open11.txt", "r");
 
   TrieNode_t *recipes_root = trie_node_create();
-  TrieNode_t *ingredients_root = trie_node_create(); // not used for now
+  TrieNode_t *ingredients_root = trie_node_create();
 
+  fscanf(file, "%d %d ", &courier_interval, &courier_capacity);
+
+  // MAIN EVENT LOOP
+  // TODO: expedite reading commands by only comparing the first character of the token
   while (fscanf(file, "%s", token) == 1)
   {
     if (!strcmp(token, "aggiungi_ricetta"))
@@ -206,18 +246,43 @@ int main()
 
       if (!recipe_node->dest)
       {
-        recipe_node->dest = recipe_create();
+        Recipe_t *recipe = recipe_create();
+        recipe_node->dest = recipe;
         printf("Ricetta %s aggiunta\n", recipe_name);
-        // scan ingredients:
+
         char ingredient_name[256];
         int ingredient_quantity;
-        while (true)
+        int total_weight = 0;
+
+        // scan ingredients and append them to the recipe cascadingly
+        RecipeIngredient_t **current_ingredient = &recipe->ingredients_list;
+        while (fgetc(file) != '\n') // always consumes one character, presumably whitespace
         {
-          if (fgetc(file) == '\n')
-            break;
-          fscanf(file, "%s %d", ingredient_name, &ingredient_quantity) == 2;
+          fscanf(file, "%s %d", ingredient_name, &ingredient_quantity); // last whitespace stays in the buffer for fgetc to read
+
+#ifndef NO_METRICS
           printf("Ingredient: %s, quantity: %d\n", ingredient_name, ingredient_quantity);
+#endif
+
+          total_weight += ingredient_quantity;
+          *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
+          (*current_ingredient)->quantity = ingredient_quantity;
+          (*current_ingredient)->ingredient = ingredient_find_or_create(ingredients_root, ingredient_name);
+          current_ingredient = &(*current_ingredient)->next_ingredient;
         }
+        // last ingredient ->next_ingredient is already NULL from calloc
+
+        recipe->weight = total_weight;
+
+#ifndef NO_METRICS
+        printf("Total weight of recipe %s: %d\nIngredients:\n", recipe_name, total_weight);
+        RecipeIngredient_t *current = recipe->ingredients_list;
+        while (current)
+        {
+          printf(" - %p qty %d (%d in pantry)\n", current->ingredient, current->quantity, current->ingredient->total_quantity);
+          current = current->next_ingredient;
+        }
+#endif
       }
       else
       {
@@ -242,14 +307,16 @@ int main()
       }
     }
     else
-      // we don't need to implement other commands for now
+      // TODO: implement other commands
       go_to_line_end(file);
+    current_time++;
   }
 
 #ifndef NO_METRICS
   char *test_keys[] = {
-      "Z81OlQgP8Q",
+      "Z81OlQgP8Q", // this one should have been deleted
       "Z81OlQb5e",
+      "missing", // missing keys in the trie don't even get printed
   };
   for (unsigned int i = 0; i < sizeof(test_keys) / sizeof(test_keys[0]); i++)
   {
@@ -259,7 +326,14 @@ int main()
       printf("Address of recipe node %s: %p - exists: %s (at %p)\n", test_keys[i], node, node->dest ? "yes" : "no", node->dest);
     }
   }
-  printf("Numero ricette finale: %d (%d creazioni, %d eliminazioni, %d aggiungi_ricetta)\nNumero trie nodes (da %lu byte ciascuno): %d, per un totale di %ld KiB\n", numero_ricette, numero_aggiunte_ricette, numero_eliminazioni_ricette, numero_comandi_aggiungi_ricetta, sizeof(TrieNode_t), numero_trie_nodes, numero_trie_nodes * sizeof(TrieNode_t) / 1024);
+  printf("Numero ricette finale: %d (%d creazioni, %d eliminazioni, %d aggiungi_ricetta)\nNumero trie nodes (da %lu byte ciascuno): %d, per un totale di %ld KiB\n",
+         numero_ricette,
+         numero_aggiunte_ricette,
+         numero_eliminazioni_ricette,
+         numero_comandi_aggiungi_ricetta,
+         sizeof(TrieNode_t),
+         numero_trie_nodes,
+         numero_trie_nodes * sizeof(TrieNode_t) / 1024);
 #endif
 
   return 0;

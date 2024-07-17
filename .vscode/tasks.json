@@ -6,7 +6,11 @@
             "type": "shell",
             "command": "gcc",
             "args": [
+                "-Wall",
+                "-std=gnu11",
+                "-O2",
                 "-g",
+                "-pipe",
                 "-o",
                 "${workspaceFolder}/trie_test",
                 "${workspaceFolder}/trie_test.c"
