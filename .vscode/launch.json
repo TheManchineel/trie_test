@@ -6,9 +6,11 @@
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/trie_test",
-            "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "Compile trie_test.c"
-        }
+            "preLaunchTask": "Compile trie_test.c",
+            "stdio": [
+                "${workspaceFolder}/tests/open4.txt",
+            ]
+        },
     ]
 }

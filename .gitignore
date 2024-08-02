@@ -1,3 +1,4 @@
 *.dSYM/
 trie_test
 .DS_Store
+tests/

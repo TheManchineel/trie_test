@@ -24,6 +24,8 @@ int numero_eliminazioni_ricette = 0;
 int numero_trie_nodes = 0;
 #endif
 
+/* ********************************** TYPE DEFINITIONS **********************************/
+
 typedef struct Order
 {
   int order_time;
@@ -52,6 +54,7 @@ typedef struct RecipeIngredient
   Ingredient_t *ingredient;
   int quantity;
   struct RecipeIngredient *next_ingredient;
+  int uses;
 } RecipeIngredient_t;
 
 typedef struct Recipe
@@ -185,160 +188,187 @@ void ingredient_replenish(TrieNode_t *trie_root, char *key, int quantity, int ex
   IngredientLot_t *new_lot = calloc(sizeof(IngredientLot_t), 1);
   new_lot->quantity = quantity;
   new_lot->expiration_time = expiration;
-  new_lot->next_lot = ingredient->lot_list;
   ingredient->total_quantity += quantity;
 
   // TODO: use a min-heap instead of a linked list for O(log n) insertion
-  for (IngredientLot_t **current = &ingredient->lot_list; *current; current = &(*current)->next_lot)
+  if (!ingredient->lot_list)
   {
-    if ((*current)->expiration_time > expiration)
-    {
-      new_lot->next_lot = *current;
-      *current = new_lot;
-      return;
-    }
+    ingredient->lot_list = new_lot;
+    return;
+  }
+  else if (ingredient->lot_list->expiration_time > expiration)
+  {
+    new_lot->next_lot = ingredient->lot_list;
+    ingredient->lot_list = new_lot;
+    return;
+  }
+  else
+  {
+    IngredientLot_t *current = ingredient->lot_list;
+    while (current->next_lot && current->next_lot->expiration_time <= expiration)
+      current = current->next_lot;
+    new_lot->next_lot = current->next_lot;
+    current->next_lot = new_lot;
   }
 }
 
-// Evaluates orders in the pending queue
-void evaluate_pending_orders()
+// Removes expired lots from the ingredient (if any)
+void clear_expired_lots(Ingredient_t *ingredient)
 {
-  // lazily traverse the shipping queue once for all iterations, only if any orders are now shippable
-  Order_t *shipping_queue_tail = NULL;
-  bool shipping_queue_tail_already_resolved = false;
-
-  // we need to check if each order in the pending queue can be shipped, and if so, make it consuming ingredient lots in order of expiration and moving it to the shipping queue
-  for (Order_t **current_order = &pending_queue; *current_order;)
+  for (
+      IngredientLot_t *current_lot = ingredient->lot_list;
+      current_lot && current_lot->expiration_time < current_time;
+      ingredient->lot_list = current_lot)
   {
-    Order_t *order = *current_order;
-    Recipe_t *recipe = order->recipe;
+    IngredientLot_t *next_lot = current_lot->next_lot;
+    ingredient->total_quantity -= current_lot->quantity;
+    free(current_lot);
+    current_lot = next_lot;
+  }
+}
 
-    // check if all RecipeIngredient_t's are available
-    RecipeIngredient_t *current_ingredient;
-    for (current_ingredient = recipe->ingredients_list; current_ingredient; current_ingredient = current_ingredient->next_ingredient)
+// Consumes the ingredients and returns true if the order is shippable, doesn't alter the pantry and returns false otherwise
+bool check_and_fill_order(Order_t *order)
+{
+  Recipe_t *current_recipe = order->recipe;
+
+  for (RecipeIngredient_t *current_recipe_ingredient = current_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  {
+    clear_expired_lots(current_recipe_ingredient->ingredient);
+    if (current_recipe_ingredient->ingredient->total_quantity < current_recipe_ingredient->quantity * order->order_quantity)
+      return false;
+  }
+
+  for (RecipeIngredient_t *current_recipe_ingredient = current_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  {
+    int quantity_needed = current_recipe_ingredient->quantity * order->order_quantity;
+    Ingredient_t *ingredient = current_recipe_ingredient->ingredient;
+
+    IngredientLot_t **current_lot_ptr = &ingredient->lot_list;
+    while (quantity_needed > 0)
     {
-      Ingredient_t *ingredient = current_ingredient->ingredient;
-      if (ingredient->total_quantity < current_ingredient->quantity)
-        break;
-    }
-
-    if (!current_ingredient) // if we reached the end of the list (NULL), all ingredients are available
-    {
-      for (current_ingredient = recipe->ingredients_list; current_ingredient; current_ingredient = current_ingredient->next_ingredient)
+      if ((*current_lot_ptr)->quantity <= quantity_needed)
       {
-        Ingredient_t *ingredient = current_ingredient->ingredient;
-        int quantity_needed = current_ingredient->quantity;
-        ingredient->total_quantity -= quantity_needed; // we can already safely subtract the quantity needed
-        IngredientLot_t **current_lot = &ingredient->lot_list;
-
-        while (quantity_needed > 0)
-        {
-          if ((*current_lot)->quantity <= quantity_needed)
-          {
-            quantity_needed -= (*current_lot)->quantity;
-            IngredientLot_t *next_lot = (*current_lot)->next_lot;
-            free(*current_lot);
-            *current_lot = next_lot;
-          }
-          else
-          {
-            (*current_lot)->quantity -= quantity_needed;
-            quantity_needed = 0;
-          }
-        }
-      }
-
-      // move the order to the shipping queue
-      if (shipping_queue_tail_already_resolved)
-      {
-        shipping_queue_tail->next_order = order;
-        shipping_queue_tail = order;
+        quantity_needed -= (*current_lot_ptr)->quantity;
+        ingredient->total_quantity -= (*current_lot_ptr)->quantity;
+        IngredientLot_t *next_lot = (*current_lot_ptr)->next_lot;
+        free(*current_lot_ptr);
+        *current_lot_ptr = next_lot;
       }
       else
       {
-        if (shipping_queue) // if the shipping queue is not empty
-          for (shipping_queue_tail = shipping_queue; shipping_queue_tail->next_order; shipping_queue_tail = shipping_queue_tail->next_order)
-            continue;
-        else // this is the first shippable order
-        {
-          shipping_queue = order;
-          shipping_queue_tail = order;
-        }
-        shipping_queue_tail_already_resolved = true;
+        (*current_lot_ptr)->quantity -= quantity_needed;
+        ingredient->total_quantity -= quantity_needed;
+        quantity_needed = 0;
       }
-
-      *current_order = order->next_order;
-    }
-    else
-    {
-      current_order = &order->next_order;
     }
   }
+
+  return true;
+}
+
+// Inserts the order into the shipping queue at the correct position (sorted by time of arrival) altering *order_to_add->next_order
+void add_to_shipping_queue(Order_t *order_to_add)
+{
+  Order_t **current_order = &shipping_queue;
+  while (*current_order && (*current_order)->order_time < order_to_add->order_time)
+    current_order = &(*current_order)->next_order;
+
+  order_to_add->next_order = *current_order; // *current_order is NULL (empty queue or end of queue) or a later order
+  *current_order = order_to_add;
+}
+
+// Evaluates orders in the pending queue and moves them to the shipping queue if they can be fulfilled
+void evaluate_pending_orders()
+{
+  Order_t *next_order;
+  for (Order_t **current_order = &pending_queue; *current_order;)
+  {
+    next_order = (*current_order)->next_order; // need to save the next order before it's altered by add_to_shipping_queue
+    if (check_and_fill_order(*current_order))
+    {
+      add_to_shipping_queue(*current_order);
+      *current_order = next_order;
+    }
+    else
+      current_order = &(*current_order)->next_order; // does not affect the queue, just advances our pointer
+  }
+}
+
+// Counts the number of orders in the shipping queue that fit in the courier's capacity given their weight
+int count_shippable_orders()
+{
+  int shippable_orders = 0;
+  int current_weight = 0;
+  for (Order_t *current_order = shipping_queue; current_order; current_order = current_order->next_order)
+  {
+    if (current_weight + current_order->order_weight <= courier_capacity)
+    {
+      shippable_orders++;
+      current_weight += current_order->order_weight;
+    }
+    else
+      break;
+  }
+  return shippable_orders;
 }
 
 // Attempts to prepare the order and add it to the shipping queue, or if ingredients are missing, adds it to the pending queue
 void add_order(Order_t *new_order)
 {
-  Recipe_t *recipe = new_order->recipe;
-  RecipeIngredient_t *current_ingredient;
-  Order_t **target_queue;
-
-  for (current_ingredient = recipe->ingredients_list; current_ingredient; current_ingredient = current_ingredient->next_ingredient)
-  {
-    Ingredient_t *ingredient = current_ingredient->ingredient;
-    if (ingredient->total_quantity < current_ingredient->quantity)
-      break;
-  }
-  if (!current_ingredient) // if we reached the end of the list (NULL), all ingredients are available
-  {
-    target_queue = &shipping_queue;
-
-    for (current_ingredient = recipe->ingredients_list; current_ingredient; current_ingredient = current_ingredient->next_ingredient)
-    {
-      Ingredient_t *ingredient = current_ingredient->ingredient;
-      int quantity_needed = current_ingredient->quantity;
-      ingredient->total_quantity -= quantity_needed; // we can already safely subtract the quantity needed
-      IngredientLot_t **current_lot = &ingredient->lot_list;
-
-      while (quantity_needed > 0)
-      {
-        if ((*current_lot)->quantity <= quantity_needed)
-        {
-          quantity_needed -= (*current_lot)->quantity;
-          IngredientLot_t *next_lot = (*current_lot)->next_lot;
-          free(*current_lot);
-          *current_lot = next_lot;
-        }
-        else
-        {
-          (*current_lot)->quantity -= quantity_needed;
-          quantity_needed = 0;
-        }
-      }
-    }
-  }
+  if (check_and_fill_order(new_order))
+    add_to_shipping_queue(new_order);
   else
-    target_queue = &pending_queue;
-
-  // append the order to the end of the target queue
-  if (*target_queue)
   {
-    Order_t *current_order;
-    for (current_order = *target_queue; current_order->next_order; current_order = current_order->next_order)
-      continue;
-    current_order->next_order = new_order;
+    Order_t **current_order = &pending_queue;
+    while (*current_order)
+      current_order = &(*current_order)->next_order;
+    *current_order = new_order;
   }
-  else
-    *target_queue = new_order;
 }
 
-// STILL TO BE IMPLEMENTED
+// Comparison function for orders for qsort. Orders are sorted by weight descending, then by time of arrival ascending
+int order_cmp(const void *a, const void *b)
+{
+  Order_t *order_a = *(Order_t **)a;
+  Order_t *order_b = *(Order_t **)b;
+  if (order_a->order_weight != order_b->order_weight)
+    return order_b->order_weight - order_a->order_weight;
+  return order_a->order_time - order_b->order_time;
+}
+
+// Count shippable orders from the queue, pop them in a dynamically allocated array for qsort() and print them ordered
 void courier()
 {
-  // TBI
-  puts("camioncino vuoto"); // TODO: implement courier
+  int shippable_orders = count_shippable_orders();
+  Order_t **shippable_order_array = calloc(sizeof(Order_t *), shippable_orders);
+  for (int i = 0; i < shippable_orders; i++)
+  {
+    shippable_order_array[i] = shipping_queue;
+    shipping_queue = shipping_queue->next_order;
+  }
+
+  if (shippable_orders == 0)
+  {
+    puts("camioncino vuoto");
+    return;
+  }
+
+  qsort(shippable_order_array, shippable_orders, sizeof(Order_t *), order_cmp);
+  // ⟨istante_di_arrivo_ordine⟩ ⟨nome_ricetta⟩ ⟨numero_elementi_ordinati⟩
+  for (int i = 0; i < shippable_orders; i++)
+  {
+    Order_t *current_order = shippable_order_array[i];
+    printf("%d %s %d\n", current_order->order_time, current_order->recipe_name, current_order->order_quantity);
+    current_order->recipe->order_count--;
+    free(current_order);
+  }
+
+  free(shippable_order_array);
 }
 
+/* **************************************************************************************** */
+/*                                      PROGRAM MAIN                                        */
 /* **************************************************************************************** */
 
 int main()
@@ -346,16 +376,18 @@ int main()
   char recipe_name[256];
   char token[64];
 
-  FILE *file = fopen("/Users/manchineel/archivio_materiali/test_cases_pubblici/example.txt", "r");
+  FILE *file;
+  // file = fopen("/Users/manchineel/archivio_materiali/test_cases_pubblici/open2.txt", "r");
+  file = stdin;
 
   TrieNode_t *recipes_root = trie_node_create();
   TrieNode_t *ingredients_root = trie_node_create();
 
-  fscanf(file, "%d %d ", &courier_interval, &courier_capacity);
+  scanf("%d %d ", &courier_interval, &courier_capacity);
 
   // MAIN EVENT LOOP ****************************************************************************************
   // TODO: expedite reading commands by only comparing the first character of the token
-  while (fscanf(file, "%s", token) == 1)
+  while (scanf("%s", token) == 1)
   {
 
     if (!strcmp(token, "aggiungi_ricetta"))
@@ -363,7 +395,7 @@ int main()
 #ifdef METRICS
       numero_comandi_aggiungi_ricetta++;
 #endif
-      fscanf(file, "%s", recipe_name);
+      scanf("%s", recipe_name);
       TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, true);
 
       if (!recipe_node->dest)
@@ -379,7 +411,7 @@ int main()
         RecipeIngredient_t **current_ingredient = &recipe->ingredients_list;
         while (fgetc(file) != '\n') // always consumes one character, presumably whitespace
         {
-          fscanf(file, "%s %d", ingredient_name, &ingredient_quantity); // last whitespace stays in the buffer for fgetc to read
+          scanf("%s %d", ingredient_name, &ingredient_quantity); // last whitespace stays in the buffer for fgetc to read
           total_weight += ingredient_quantity;
           *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
           (*current_ingredient)->quantity = ingredient_quantity;
@@ -392,11 +424,14 @@ int main()
         puts("aggiunta");
       }
       else
+      {
         puts("ignorato"); // recipe already exists
+        go_to_line_end(file);
+      }
     }
     else if (!strcmp(token, "rimuovi_ricetta"))
     {
-      fscanf(file, "%s", recipe_name);
+      scanf("%s", recipe_name);
       TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, false);
       if (recipe_node && recipe_node->dest)
       {
@@ -423,7 +458,7 @@ int main()
         char ingredient_name[256];
         int ingredient_quantity;
         int ingredient_expiration;
-        fscanf(file, "%s %d %d", ingredient_name, &ingredient_quantity, &ingredient_expiration);
+        scanf("%s %d %d", ingredient_name, &ingredient_quantity, &ingredient_expiration);
 
         ingredient_replenish(ingredients_root, ingredient_name, ingredient_quantity, ingredient_expiration);
       }
@@ -433,14 +468,15 @@ int main()
     else if (!strcmp(token, "ordine"))
     {
       Order_t *new_order = calloc(sizeof(Order_t), 1);
-      fscanf(file, "%s %d", new_order->recipe_name, &new_order->order_quantity);
-      new_order->recipe = trie_node_find_or_create(recipes_root, new_order->recipe_name, false)->dest;
-      if (new_order->recipe)
+      scanf("%s %d", new_order->recipe_name, &new_order->order_quantity);
+      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, new_order->recipe_name, false);
+      if (recipe_node && recipe_node->dest)
       {
+        new_order->recipe = recipe_node->dest;
         new_order->order_time = current_time;
         // new_order->next_order = NULL; // already zeroed by calloc
         add_order(new_order);
-        new_order->order_weight = new_order->recipe->weight;
+        new_order->order_weight = new_order->recipe->weight * new_order->order_quantity;
         new_order->recipe->order_count++;
         puts("accettato");
       }
@@ -463,8 +499,8 @@ int main()
       courier();
   }
 
-  if (current_time % courier_interval != 0)
-    courier(); // last courier run
+  // if (current_time % courier_interval != 0)
+  // courier(); // last courier run
 
 #ifdef METRICS
   char *test_keys[] = {
