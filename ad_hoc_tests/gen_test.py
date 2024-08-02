@@ -8,11 +8,11 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 USAGE_NOTE = "Usage: gen_test.py <test|retest> <test_name> [arg1] [arg2] ..."
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3:
+    if len(sys.argv) < 3:
         print(USAGE_NOTE)
         sys.exit(1)
-    test_name = os.path.join(script_dir, f"test_case_{sys.argv[2]}.txt")
 
+    test_name = os.path.join(script_dir, f"test_case_{sys.argv[2]}.txt")
     extra_args = sys.argv[3:]
 
     match sys.argv[1]:
@@ -21,7 +21,7 @@ if __name__ == "__main__":
                 subprocess.run([os.path.join(script_dir, "test_gen_2024_macos")] + extra_args, stdout=f)
         case "retest":
             pass
-        case default:
+        case _:
             print(USAGE_NOTE)
             sys.exit(1)
 

@@ -285,7 +285,7 @@ void evaluate_pending_orders()
   Order_t *next_order;
   for (Order_t **current_order = &pending_queue; *current_order;)
   {
-    next_order = (*current_order)->next_order; // need to save the next order before it's altered by add_to_shipping_queue
+    next_order = (*current_order)->next_order; // need to save the next order before its pointer is altered by add_to_shipping_queue
     if (check_and_fill_order(*current_order))
     {
       add_to_shipping_queue(*current_order);
@@ -369,21 +369,22 @@ void courier()
   free(shippable_order_array);
 }
 
+TrieNode_t *recipes_root, *ingredients_root;
+
 /* **************************************************************************************** */
 /*                                      PROGRAM MAIN                                        */
 /* **************************************************************************************** */
 
 int main()
 {
+  recipes_root = trie_node_create();
+  ingredients_root = trie_node_create();
   char recipe_name[256];
   char token[64];
 
   FILE *file;
   // file = fopen("/Users/manchineel/archivio_materiali/test_cases_pubblici/open2.txt", "r");
   file = stdin;
-
-  TrieNode_t *recipes_root = trie_node_create();
-  TrieNode_t *ingredients_root = trie_node_create();
 
   assert(scanf("%d %d ", &courier_interval, &courier_capacity) == 2);
 
