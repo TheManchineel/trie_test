@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <assert.h>
 
 int courier_interval;
 int courier_capacity;
@@ -383,7 +384,7 @@ int main()
   TrieNode_t *recipes_root = trie_node_create();
   TrieNode_t *ingredients_root = trie_node_create();
 
-  scanf("%d %d ", &courier_interval, &courier_capacity);
+  assert(scanf("%d %d ", &courier_interval, &courier_capacity) == 2);
 
   // MAIN EVENT LOOP ****************************************************************************************
   // TODO: expedite reading commands by only comparing the first character of the token
@@ -395,7 +396,7 @@ int main()
 #ifdef METRICS
       numero_comandi_aggiungi_ricetta++;
 #endif
-      scanf("%s", recipe_name);
+      assert(scanf("%s", recipe_name) == 1);
       TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, true);
 
       if (!recipe_node->dest)
@@ -411,7 +412,7 @@ int main()
         RecipeIngredient_t **current_ingredient = &recipe->ingredients_list;
         while (fgetc(file) != '\n') // always consumes one character, presumably whitespace
         {
-          scanf("%s %d", ingredient_name, &ingredient_quantity); // last whitespace stays in the buffer for fgetc to read
+          assert(scanf("%s %d", ingredient_name, &ingredient_quantity) == 2); // last whitespace stays in the buffer for fgetc to read
           total_weight += ingredient_quantity;
           *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
           (*current_ingredient)->quantity = ingredient_quantity;
@@ -431,7 +432,7 @@ int main()
     }
     else if (!strcmp(token, "rimuovi_ricetta"))
     {
-      scanf("%s", recipe_name);
+      assert(scanf("%s", recipe_name) == 1);
       TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, false);
       if (recipe_node && recipe_node->dest)
       {
@@ -458,7 +459,7 @@ int main()
         char ingredient_name[256];
         int ingredient_quantity;
         int ingredient_expiration;
-        scanf("%s %d %d", ingredient_name, &ingredient_quantity, &ingredient_expiration);
+        assert(scanf("%s %d %d", ingredient_name, &ingredient_quantity, &ingredient_expiration) == 3);
 
         ingredient_replenish(ingredients_root, ingredient_name, ingredient_quantity, ingredient_expiration);
       }
@@ -468,7 +469,7 @@ int main()
     else if (!strcmp(token, "ordine"))
     {
       Order_t *new_order = calloc(sizeof(Order_t), 1);
-      scanf("%s %d", new_order->recipe_name, &new_order->order_quantity);
+      assert(scanf("%s %d", new_order->recipe_name, &new_order->order_quantity) == 2);
       TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, new_order->recipe_name, false);
       if (recipe_node && recipe_node->dest)
       {
