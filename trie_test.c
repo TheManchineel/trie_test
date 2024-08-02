@@ -231,16 +231,16 @@ void clear_expired_lots(Ingredient_t *ingredient)
 // Consumes the ingredients and returns true if the order is shippable, doesn't alter the pantry and returns false otherwise
 bool check_and_fill_order(Order_t *order)
 {
-  Recipe_t *current_recipe = order->recipe;
+  Recipe_t *order_recipe = order->recipe;
 
-  for (RecipeIngredient_t *current_recipe_ingredient = current_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
   {
     clear_expired_lots(current_recipe_ingredient->ingredient);
     if (current_recipe_ingredient->ingredient->total_quantity < current_recipe_ingredient->quantity * order->order_quantity)
       return false;
   }
 
-  for (RecipeIngredient_t *current_recipe_ingredient = current_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
   {
     int quantity_needed = current_recipe_ingredient->quantity * order->order_quantity;
     Ingredient_t *ingredient = current_recipe_ingredient->ingredient;
@@ -342,17 +342,18 @@ int order_cmp(const void *a, const void *b)
 void courier()
 {
   int shippable_orders = count_shippable_orders();
-  Order_t **shippable_order_array = calloc(sizeof(Order_t *), shippable_orders);
+  if (!shippable_orders)
+  {
+    puts("camioncino vuoto");
+    return;
+  }
+
+  Order_t **shippable_order_array = malloc(sizeof(Order_t *) * shippable_orders);
   for (int i = 0; i < shippable_orders; i++)
   {
     shippable_order_array[i] = shipping_queue;
     shipping_queue = shipping_queue->next_order;
-  }
-
-  if (shippable_orders == 0)
-  {
-    puts("camioncino vuoto");
-    return;
+    // "leaked" orders in memory will be freed soon after
   }
 
   qsort(shippable_order_array, shippable_orders, sizeof(Order_t *), order_cmp);
@@ -390,7 +391,6 @@ int main()
   // TODO: expedite reading commands by only comparing the first character of the token
   while (scanf("%s", token) == 1)
   {
-
     if (!strcmp(token, "aggiungi_ricetta"))
     {
 #ifdef METRICS
@@ -493,15 +493,11 @@ int main()
       printf("non implementato: %s\n", token);
       go_to_line_end(file);
     }
-    // TODO: implement other commands
-    current_time++;
 
+    current_time++;
     if (current_time % courier_interval == 0 && current_time != 0)
       courier();
   }
-
-  // if (current_time % courier_interval != 0)
-  // courier(); // last courier run
 
 #ifdef METRICS
   char *test_keys[] = {

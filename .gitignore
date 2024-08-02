@@ -2,3 +2,6 @@
 trie_test
 .DS_Store
 tests/
+ad_hoc_tests/sol_2024_*
+ad_hoc_tests/test_gen_2024_*
+ad_hoc_tests/*.txt
