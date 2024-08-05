@@ -317,6 +317,7 @@ int count_shippable_orders()
 // Attempts to prepare the order and add it to the shipping queue, or if ingredients are missing, adds it to the pending queue
 void add_order(Order_t *new_order)
 {
+  current_time++;
   if (check_and_fill_order(new_order))
     add_to_shipping_queue(new_order);
   else
@@ -326,6 +327,7 @@ void add_order(Order_t *new_order)
       current_order = &(*current_order)->next_order;
     *current_order = new_order;
   }
+  current_time--;
 }
 
 // Comparison function for orders for qsort. Orders are sorted by weight descending, then by time of arrival ascending
@@ -465,7 +467,9 @@ int main()
         ingredient_replenish(ingredients_root, ingredient_name, ingredient_quantity, ingredient_expiration);
       }
       puts("rifornito");
+      current_time++;            // replenishments take one time unit
       evaluate_pending_orders(); // new ingredients might make some orders shippable
+      current_time--;            // current_time is incremented at the end of the loop
     }
     else if (!strcmp(token, "ordine"))
     {

@@ -13,6 +13,7 @@
                 "-pipe",
                 "-o",
                 "${workspaceFolder}/trie_test",
+                // "-fsanitize=address",
                 "${workspaceFolder}/trie_test.c"
             ],
             "group": "build",

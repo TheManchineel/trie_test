@@ -39,5 +39,5 @@ if __name__ == "__main__":
         solution_job.wait()
         test_job.wait()
 
-    subprocess.run(["diff", "-u", solution_name, output_name])
-    subprocess.run(["code", "-d", solution_name, output_name])  # for VS Code
+    subprocess.run(["diff", "-u", output_name, solution_name])
+    subprocess.run(["code", "-d", output_name, solution_name])  # for VS Code
