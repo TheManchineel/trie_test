@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug trie_test",
+            "name": "Debug trie_test (lldb)",
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/trie_test",
@@ -12,5 +12,17 @@
                 "${workspaceFolder}/tests/open9.txt",
             ]
         },
+        {
+            "name": "Debug trie_test (gdb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/trie_test",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Compile trie_test.c",
+            "args": [
+                "<",
+                "${workspaceFolder}/ad_hoc_tests/test_case_post-opt1.txt"
+            ]
+        }
     ]
 }
