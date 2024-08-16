@@ -16,6 +16,7 @@
 int courier_interval;
 int courier_capacity;
 int current_time = 0;
+int shippable_order_count = 0;
 
 #ifdef METRICS
 int numero_ricette = 0;
@@ -27,6 +28,12 @@ int numero_trie_nodes = 0;
 
 /* ********************************** TYPE DEFINITIONS **********************************/
 
+typedef enum OrderState
+{
+  PENDING = 0,
+  SHIPPABLE = 1
+} OrderState_t;
+
 typedef struct Order
 {
   int order_time;
@@ -35,6 +42,7 @@ typedef struct Order
   char recipe_name[256];
   struct Recipe *recipe;
   struct Order *next_order;
+  OrderState_t state;
 } Order_t;
 
 typedef struct IngredientLot
@@ -74,8 +82,7 @@ typedef struct TrieNode
   struct TrieNode *child_underscore;
 } TrieNode_t;
 
-Order_t *pending_queue = NULL;
-Order_t *shipping_queue = NULL;
+Order_t *order_queue = NULL;
 
 // Skips to the end of the line in the file
 void go_to_line_end(FILE *file)
@@ -93,6 +100,23 @@ Recipe_t *recipe_create()
 #endif
   Recipe_t *recipe = calloc(sizeof(Recipe_t), 1);
   return recipe;
+}
+
+// Deletes a recipe and its ingredients
+void recipe_delete(Recipe_t *recipe)
+{
+#ifdef METRICS
+  numero_ricette--;
+  numero_eliminazioni_ricette++;
+#endif
+  RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
+  while (current_ingredient)
+  {
+    RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
+    free(current_ingredient);
+    current_ingredient = next_ingredient;
+  }
+  free(recipe);
 }
 
 // Returns a new trie node
@@ -264,70 +288,41 @@ bool check_and_fill_order(Order_t *order)
       }
     }
   }
-
   return true;
-}
-
-// Inserts the order into the shipping queue at the correct position (sorted by time of arrival) altering *order_to_add->next_order
-void add_to_shipping_queue(Order_t *order_to_add)
-{
-  Order_t **current_order = &shipping_queue;
-  while (*current_order && (*current_order)->order_time < order_to_add->order_time)
-    current_order = &(*current_order)->next_order;
-
-  order_to_add->next_order = *current_order; // *current_order is NULL (empty queue or end of queue) or a later order
-  *current_order = order_to_add;
 }
 
 // Evaluates orders in the pending queue and moves them to the shipping queue if they can be fulfilled
 void evaluate_pending_orders()
 {
-  Order_t *next_order;
-  for (Order_t **current_order = &pending_queue; *current_order;)
-  {
-    next_order = (*current_order)->next_order; // need to save the next order before its pointer is altered by add_to_shipping_queue
-    if (check_and_fill_order(*current_order))
+  // Order_t *next_order;
+  for (Order_t *current_order = order_queue; current_order; current_order = current_order->next_order)
+    if (current_order->state == PENDING && check_and_fill_order(current_order))
     {
-      add_to_shipping_queue(*current_order);
-      *current_order = next_order;
+      current_order->state = SHIPPABLE;
+      shippable_order_count++;
     }
-    else
-      current_order = &(*current_order)->next_order; // does not affect the queue, just advances our pointer
-  }
-}
-
-// Counts the number of orders in the shipping queue that fit in the courier's capacity given their weight
-int count_shippable_orders()
-{
-  int shippable_orders = 0;
-  int current_weight = 0;
-  for (Order_t *current_order = shipping_queue; current_order; current_order = current_order->next_order)
-  {
-    if (current_weight + current_order->order_weight <= courier_capacity)
-    {
-      shippable_orders++;
-      current_weight += current_order->order_weight;
-    }
-    else
-      break;
-  }
-  return shippable_orders;
 }
 
 // Attempts to prepare the order and add it to the shipping queue, or if ingredients are missing, adds it to the pending queue
 void add_order(Order_t *new_order)
 {
-  current_time++;
+  current_time++; // simulate the accurate expiration time of ingredients
   if (check_and_fill_order(new_order))
-    add_to_shipping_queue(new_order);
-  else
   {
-    Order_t **current_order = &pending_queue;
-    while (*current_order)
-      current_order = &(*current_order)->next_order;
-    *current_order = new_order;
+    new_order->state = SHIPPABLE;
+    shippable_order_count++;
   }
-  current_time--;
+  else
+    new_order->state = PENDING;
+  current_time--; // restore the accurate current_time
+
+  // insert the order in the right place in the queue by time of arrival (unique)
+  Order_t **current_order = &order_queue;
+  while (*current_order && (*current_order)->order_time < new_order->order_time)
+    current_order = &(*current_order)->next_order;
+
+  new_order->next_order = *current_order;
+  *current_order = new_order;
 }
 
 // Comparison function for orders for qsort. Orders are sorted by weight descending, then by time of arrival ascending
@@ -343,28 +338,55 @@ int order_cmp(const void *a, const void *b)
 // Count shippable orders from the queue, pop them in a dynamically allocated array for qsort() and print them ordered
 void courier()
 {
-  int shippable_orders = count_shippable_orders();
-  if (!shippable_orders)
+  if (!shippable_order_count) // This is not strictly necessary, but it's a good optimization
   {
     puts("camioncino vuoto");
     return;
   }
 
-  Order_t **shippable_order_array = malloc(sizeof(Order_t *) * shippable_orders);
-  for (int i = 0; i < shippable_orders; i++)
+  // this is an array of pointers to the shippable orders, so we can sort them
+  // we need to account for the worst-case scenario, in which actual_shippable_orders == shippable_order_count
+  Order_t **shippable_order_array = malloc(sizeof(Order_t *) * shippable_order_count);
+
+  int actual_shippable_orders = 0;
+  int remaining_capacity = courier_capacity;
+
+  for (Order_t **current_order = &order_queue; *current_order;)
   {
-    shippable_order_array[i] = shipping_queue;
-    shipping_queue = shipping_queue->next_order;
-    // "leaked" orders in memory will be freed soon after
+    if ((*current_order)->state == SHIPPABLE)
+    {
+      if ((*current_order)->order_weight <= remaining_capacity)
+      {
+        // reminder to self: val++ evaluates to val, then increments val
+        shippable_order_array[actual_shippable_orders++] = *current_order;
+        remaining_capacity -= (*current_order)->order_weight;
+        *current_order = (*current_order)->next_order;
+        shippable_order_count--;
+        // we no longer care about the .next_order field
+      }
+      else
+        break;
+    }
+    else
+      // move to the next order
+      current_order = &(*current_order)->next_order;
   }
 
-  qsort(shippable_order_array, shippable_orders, sizeof(Order_t *), order_cmp);
-  // ⟨istante_di_arrivo_ordine⟩ ⟨nome_ricetta⟩ ⟨numero_elementi_ordinati⟩
-  for (int i = 0; i < shippable_orders; i++)
+  if (actual_shippable_orders == 0)
+  {
+    free(shippable_order_array);
+    puts("camioncino vuoto");
+    return;
+  }
+
+  qsort(shippable_order_array, actual_shippable_orders, sizeof(Order_t *), order_cmp);
+  for (int i = 0; i < actual_shippable_orders; i++)
   {
     Order_t *current_order = shippable_order_array[i];
+    // ⟨istante_di_arrivo_ordine⟩ ⟨nome_ricetta⟩ ⟨numero_elementi_ordinati⟩
     printf("%d %s %d\n", current_order->order_time, current_order->recipe_name, current_order->order_quantity);
     current_order->recipe->order_count--;
+    // this is the programming equivalent of the pull-out method of birth control, we almost leaked memory here
     free(current_order);
   }
 
@@ -441,16 +463,12 @@ int main()
       {
         if (((Recipe_t *)recipe_node->dest)->order_count == 0)
         {
-          free(recipe_node->dest);
+          recipe_delete(recipe_node->dest);
           recipe_node->dest = NULL;
           puts("rimossa");
         }
         else
           puts("ordini in sospeso");
-#ifdef METRICS
-        numero_ricette--;
-        numero_eliminazioni_ricette++;
-#endif
       }
       else
         puts("non presente");
@@ -480,6 +498,7 @@ int main()
       {
         new_order->recipe = recipe_node->dest;
         new_order->order_time = current_time;
+        new_order->state = PENDING;
         // new_order->next_order = NULL; // already zeroed by calloc
         add_order(new_order);
         new_order->order_weight = new_order->recipe->weight * new_order->order_quantity;

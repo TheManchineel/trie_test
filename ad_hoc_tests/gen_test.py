@@ -4,8 +4,19 @@ import sys
 import subprocess
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
+platform = sys.platform
 
 USAGE_NOTE = "Usage: gen_test.py <test|retest> <test_name> [arg1] [arg2] ..."
+BIN_MATRIX = {
+    "darwin": {
+        "test": "test_gen_2024_macos",
+        "sol": "sol_2024_macos",
+    },
+    "linux": {
+        "test": "test_gen_2024_linux",
+        "sol": "sol_2024_linux",
+    }
+}
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -18,7 +29,7 @@ if __name__ == "__main__":
     match sys.argv[1]:
         case "test":
             with open(os.path.join(script_dir, test_name), "w") as f:
-                subprocess.run([os.path.join(script_dir, "test_gen_2024_macos")] + extra_args, stdout=f)
+                subprocess.run([os.path.join(script_dir, BIN_MATRIX[platform]["test"])] + extra_args, stdout=f)
         case "retest":
             pass
         case _:
@@ -34,7 +45,7 @@ if __name__ == "__main__":
         open(solution_name, "w") as sol,
         open(output_name, "w") as out,
     ):
-        solution_job = subprocess.Popen([os.path.join(script_dir, "sol_2024_macos")], stdin=f1, stdout=sol)
+        solution_job = subprocess.Popen([os.path.join(script_dir, BIN_MATRIX[platform]["sol"])], stdin=f1, stdout=sol)
         test_job = subprocess.Popen(["./trie_test"], stdin=f2, stdout=out)
         solution_job.wait()
         test_job.wait()
