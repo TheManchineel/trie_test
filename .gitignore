@@ -7,3 +7,4 @@ ad_hoc_tests/test_gen_2024_*
 ad_hoc_tests/*.txt
 massif.out.*
 cachegrind.out.*
+callgrind.out.*
