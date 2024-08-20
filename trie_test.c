@@ -13,11 +13,6 @@
 #include <stdbool.h>
 #include <assert.h>
 
-int courier_interval;
-int courier_capacity;
-int current_time = 0;
-int shippable_order_count = 0;
-
 #ifdef METRICS
 int numero_ricette = 0;
 int numero_aggiunte_ricette = 0;
@@ -82,7 +77,17 @@ typedef struct TrieNode
   struct TrieNode *child_underscore;
 } TrieNode_t;
 
+/* ********************************** GLOBALS **********************************/
+
 Order_t *order_queue = NULL;
+Order_t *order_queue_tail = NULL;
+
+int courier_interval;
+int courier_capacity;
+int current_time = 0;
+int shippable_order_count = 0;
+
+/* ********************************** METHODS **********************************/
 
 // Skips to the end of the line in the file
 void go_to_line_end(FILE *file)
@@ -316,13 +321,17 @@ void add_order(Order_t *new_order)
     new_order->state = PENDING;
   current_time--; // restore the accurate current_time
 
-  // insert the order in the right place in the queue by time of arrival (unique)
-  Order_t **current_order = &order_queue;
-  while (*current_order && (*current_order)->order_time < new_order->order_time)
-    current_order = &(*current_order)->next_order;
-
-  new_order->next_order = *current_order;
-  *current_order = new_order;
+  // insert the order at end of queue
+  if (!order_queue)
+  {
+    order_queue = new_order;
+    order_queue_tail = new_order;
+  }
+  else
+  {
+    order_queue_tail->next_order = new_order;
+    order_queue_tail = new_order;
+  }
 }
 
 // Comparison function for orders for qsort. Orders are sorted by weight descending, then by time of arrival ascending
@@ -360,7 +369,10 @@ void courier()
         // reminder to self: val++ evaluates to val, then increments val
         shippable_order_array[actual_shippable_orders++] = *current_order;
         remaining_capacity -= (*current_order)->order_weight;
-        *current_order = (*current_order)->next_order;
+        if (order_queue_tail == *current_order)
+          order_queue_tail = *current_order = NULL;
+        else
+          *current_order = (*current_order)->next_order;
         shippable_order_count--;
         // we no longer care about the .next_order field
       }
