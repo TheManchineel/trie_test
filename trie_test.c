@@ -12,6 +12,17 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <stdint.h>
+
+#ifndef MAX_TRIE_NODES
+// As Bill Gates once said, "${MAX_TRIE_NODES} ought to be enough for anybody"
+#define MAX_TRIE_NODES 60000
+#endif
+
+#define OFFSET_LOWER 0
+#define OFFSET_UPPER 26
+#define OFFSET_DIGIT 52
+#define OFFSET_UNDERSCORE 62
 
 #ifdef METRICS
 int numero_ricette = 0;
@@ -22,6 +33,8 @@ int numero_trie_nodes = 0;
 #endif
 
 /* ********************************** TYPE DEFINITIONS **********************************/
+
+typedef uint16_t trie_id_t;
 
 typedef enum OrderState
 {
@@ -71,10 +84,7 @@ typedef struct Recipe
 typedef struct TrieNode
 {
   void *dest;
-  struct TrieNode *children_lower[26];
-  struct TrieNode *children_upper[26];
-  struct TrieNode *children_digit[10];
-  struct TrieNode *child_underscore;
+  trie_id_t children[26 * 2 + 10 + 1]; // [a-zA-Z0-9_]
 } TrieNode_t;
 
 /* ********************************** GLOBALS **********************************/
@@ -86,8 +96,24 @@ int courier_interval;
 int courier_capacity;
 int current_time = 0;
 int shippable_order_count = 0;
+TrieNode_t *trie_node_pool;
 
 /* ********************************** METHODS **********************************/
+
+// Replaces malloc for the trie nodes
+trie_id_t trie_malloc()
+{
+  static int trie_node_pool_alloc = 0;
+  if (trie_node_pool_alloc >= MAX_TRIE_NODES)
+  {
+    puts("Out of trie nodes! Increase MAX_TRIE_NODES. Exiting...");
+    exit(1);
+  }
+#ifdef METRICS
+  numero_trie_nodes++;
+#endif
+  return trie_node_pool_alloc++;
+}
 
 // Skips to the end of the line in the file
 void go_to_line_end(FILE *file)
@@ -124,16 +150,6 @@ void recipe_delete(Recipe_t *recipe)
   free(recipe);
 }
 
-// Returns a new trie node
-TrieNode_t *trie_node_create()
-{
-#ifdef METRICS
-  numero_trie_nodes++;
-#endif
-  TrieNode_t *node = calloc(sizeof(TrieNode_t), 1);
-  return node;
-}
-
 // Returns the requested node, creating it recursively if it doesn't exist
 TrieNode_t *trie_node_find_or_create(TrieNode_t *trie_root, char *key, bool create_if_missing)
 {
@@ -147,47 +163,47 @@ TrieNode_t *trie_node_find_or_create(TrieNode_t *trie_root, char *key, bool crea
       goto end_of_string;
 
     case 'a' ... 'z':
-      if (!current_node->children_lower[c - 'a'])
+      if (!current_node->children[OFFSET_LOWER + c - 'a'])
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children_lower[c - 'a'] = trie_node_create();
+        current_node->children[OFFSET_LOWER + c - 'a'] = trie_malloc();
       }
-      current_node = current_node->children_lower[c - 'a'];
+      current_node = &trie_node_pool[current_node->children[OFFSET_LOWER + c - 'a']];
       break;
 
     case 'A' ... 'Z':
-      if (!current_node->children_upper[c - 'A'])
+      if (!current_node->children[OFFSET_UPPER + c - 'A'])
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children_upper[c - 'A'] = trie_node_create();
+        current_node->children[OFFSET_UPPER + c - 'A'] = trie_malloc();
       }
-      current_node = current_node->children_upper[c - 'A'];
+      current_node = &trie_node_pool[current_node->children[OFFSET_UPPER + c - 'A']];
       break;
 
     case '0' ... '9':
-      if (!current_node->children_digit[c - '0'])
+      if (!current_node->children[OFFSET_DIGIT + c - '0'])
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children_digit[c - '0'] = trie_node_create();
+        current_node->children[OFFSET_DIGIT + c - '0'] = trie_malloc();
       }
-      current_node = current_node->children_digit[c - '0'];
+      current_node = &trie_node_pool[current_node->children[OFFSET_DIGIT + c - '0']];
       break;
 
     case '_':
-      if (!current_node->child_underscore)
+      if (!current_node->children[OFFSET_UNDERSCORE])
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->child_underscore = trie_node_create();
+        current_node->children[OFFSET_UNDERSCORE] = trie_malloc();
       }
-      current_node = current_node->child_underscore;
+      current_node = &trie_node_pool[current_node->children[OFFSET_UNDERSCORE]];
       break;
     }
 
@@ -413,8 +429,9 @@ TrieNode_t *recipes_root, *ingredients_root;
 
 int main()
 {
-  recipes_root = trie_node_create();
-  ingredients_root = trie_node_create();
+  trie_node_pool = calloc(sizeof(TrieNode_t), MAX_TRIE_NODES);
+  recipes_root = &trie_node_pool[trie_malloc()];
+  ingredients_root = &trie_node_pool[trie_malloc()];
   char recipe_name[256];
   char token[64];
 
