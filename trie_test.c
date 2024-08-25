@@ -16,7 +16,7 @@
 
 #ifndef MAX_TRIE_NODES
 // As Bill Gates once said, "${MAX_TRIE_NODES} ought to be enough for anybody"
-#define MAX_TRIE_NODES 60000
+#define MAX_TRIE_NODES 115000
 #endif
 
 #define OFFSET_LOWER 0
@@ -34,7 +34,7 @@ int numero_trie_nodes = 0;
 
 /* ********************************** TYPE DEFINITIONS **********************************/
 
-typedef uint16_t trie_id_t;
+typedef uint32_t trie_id_t;
 
 typedef enum OrderState
 {
@@ -42,31 +42,31 @@ typedef enum OrderState
   SHIPPABLE = 1
 } OrderState_t;
 
-typedef struct Order
+typedef struct __attribute__((packed)) Order
 {
   int order_time;
   int order_quantity;
   int order_weight;
-  char recipe_name[256];
+  char *recipe_name;
   struct Recipe *recipe;
   struct Order *next_order;
   OrderState_t state;
 } Order_t;
 
-typedef struct IngredientLot
+typedef struct __attribute__((packed)) IngredientLot
 {
   int quantity;
   int expiration_time;
   struct IngredientLot *next_lot;
 } IngredientLot_t;
 
-typedef struct Ingredient
+typedef struct __attribute__((packed)) Ingredient
 {
   int total_quantity;
   struct IngredientLot *lot_list;
 } Ingredient_t;
 
-typedef struct RecipeIngredient
+typedef struct __attribute__((packed)) RecipeIngredient
 {
   Ingredient_t *ingredient;
   int quantity;
@@ -74,17 +74,23 @@ typedef struct RecipeIngredient
   int uses;
 } RecipeIngredient_t;
 
-typedef struct Recipe
+typedef struct __attribute__((packed)) Recipe
 {
   int weight;
   int order_count;
+  char *name;
   RecipeIngredient_t *ingredients_list;
 } Recipe_t;
 
-typedef struct TrieNode
+typedef struct __attribute__((packed)) ChildField
+{
+  trie_id_t value : 20;
+} ChildField_t;
+
+typedef struct __attribute__((packed)) TrieNode
 {
   void *dest;
-  trie_id_t children[26 * 2 + 10 + 1]; // [a-zA-Z0-9_]
+  ChildField_t children[26 * 2 + 10 + 1]; // [a-zA-Z0-9_]
 } TrieNode_t;
 
 /* ********************************** GLOBALS **********************************/
@@ -123,13 +129,14 @@ void go_to_line_end(FILE *file)
 }
 
 // Returns a new recipe
-Recipe_t *recipe_create()
+Recipe_t *recipe_create(char *recipe_name)
 {
 #ifdef METRICS
   numero_ricette++;
   numero_aggiunte_ricette++;
 #endif
   Recipe_t *recipe = calloc(sizeof(Recipe_t), 1);
+  recipe->name = strdup(recipe_name);
   return recipe;
 }
 
@@ -147,6 +154,7 @@ void recipe_delete(Recipe_t *recipe)
     free(current_ingredient);
     current_ingredient = next_ingredient;
   }
+  free(recipe->name);
   free(recipe);
 }
 
@@ -163,47 +171,47 @@ TrieNode_t *trie_node_find_or_create(TrieNode_t *trie_root, char *key, bool crea
       goto end_of_string;
 
     case 'a' ... 'z':
-      if (!current_node->children[OFFSET_LOWER + c - 'a'])
+      if (!current_node->children[OFFSET_LOWER + c - 'a'].value)
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children[OFFSET_LOWER + c - 'a'] = trie_malloc();
+        current_node->children[OFFSET_LOWER + c - 'a'].value = trie_malloc();
       }
-      current_node = &trie_node_pool[current_node->children[OFFSET_LOWER + c - 'a']];
+      current_node = &trie_node_pool[current_node->children[OFFSET_LOWER + c - 'a'].value];
       break;
 
     case 'A' ... 'Z':
-      if (!current_node->children[OFFSET_UPPER + c - 'A'])
+      if (!current_node->children[OFFSET_UPPER + c - 'A'].value)
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children[OFFSET_UPPER + c - 'A'] = trie_malloc();
+        current_node->children[OFFSET_UPPER + c - 'A'].value = trie_malloc();
       }
-      current_node = &trie_node_pool[current_node->children[OFFSET_UPPER + c - 'A']];
+      current_node = &trie_node_pool[current_node->children[OFFSET_UPPER + c - 'A'].value];
       break;
 
     case '0' ... '9':
-      if (!current_node->children[OFFSET_DIGIT + c - '0'])
+      if (!current_node->children[OFFSET_DIGIT + c - '0'].value)
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children[OFFSET_DIGIT + c - '0'] = trie_malloc();
+        current_node->children[OFFSET_DIGIT + c - '0'].value = trie_malloc();
       }
-      current_node = &trie_node_pool[current_node->children[OFFSET_DIGIT + c - '0']];
+      current_node = &trie_node_pool[current_node->children[OFFSET_DIGIT + c - '0'].value];
       break;
 
     case '_':
-      if (!current_node->children[OFFSET_UNDERSCORE])
+      if (!current_node->children[OFFSET_UNDERSCORE].value)
       {
         if (!create_if_missing)
           return NULL;
 
-        current_node->children[OFFSET_UNDERSCORE] = trie_malloc();
+        current_node->children[OFFSET_UNDERSCORE].value = trie_malloc();
       }
-      current_node = &trie_node_pool[current_node->children[OFFSET_UNDERSCORE]];
+      current_node = &trie_node_pool[current_node->children[OFFSET_UNDERSCORE].value];
       break;
     }
 
@@ -455,7 +463,7 @@ int main()
 
       if (!recipe_node->dest)
       {
-        Recipe_t *recipe = recipe_create();
+        Recipe_t *recipe = recipe_create(recipe_name);
         recipe_node->dest = recipe;
 
         char ingredient_name[256];
@@ -521,11 +529,13 @@ int main()
     else if (!strcmp(token, "ordine"))
     {
       Order_t *new_order = calloc(sizeof(Order_t), 1);
-      assert(scanf("%s %d", new_order->recipe_name, &new_order->order_quantity) == 2);
-      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, new_order->recipe_name, false);
+      char order_recipe_name[256];
+      assert(scanf("%s %d", order_recipe_name, &new_order->order_quantity) == 2);
+      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, order_recipe_name, false);
       if (recipe_node && recipe_node->dest)
       {
         new_order->recipe = recipe_node->dest;
+        new_order->recipe_name = new_order->recipe->name;
         new_order->order_time = current_time;
         new_order->state = PENDING;
         // new_order->next_order = NULL; // already zeroed by calloc
