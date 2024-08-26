@@ -21,7 +21,7 @@
             "preLaunchTask": "Compile trie_test.c",
             "args": [
                 "<",
-                "${workspaceFolder}/ad_hoc_tests/test_case_post-opt1.txt"
+                "${workspaceFolder}/tests/open8.txt"
             ]
         }
     ]

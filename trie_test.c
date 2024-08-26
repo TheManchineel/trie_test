@@ -30,6 +30,7 @@ int numero_aggiunte_ricette = 0;
 int numero_comandi_aggiungi_ricetta = 0;
 int numero_eliminazioni_ricette = 0;
 int numero_trie_nodes = 0;
+int numero_aggiunte_ingrediente_nuovo = 0;
 #endif
 
 /* ********************************** TYPE DEFINITIONS **********************************/
@@ -41,6 +42,13 @@ typedef enum OrderState
   PENDING = 0,
   SHIPPABLE = 1
 } OrderState_t;
+
+typedef enum RecipeDeleteResult
+{
+  RECIPE_DELETED = 0,
+  RECIPE_NOT_FOUND = 1,
+  RECIPE_HAS_ORDERS = 2
+} RecipeDeleteResult_t;
 
 typedef struct __attribute__((packed)) Order
 {
@@ -93,18 +101,33 @@ typedef struct __attribute__((packed)) TrieNode
   ChildField_t children[26 * 2 + 10 + 1]; // [a-zA-Z0-9_]
 } TrieNode_t;
 
-/* ********************************** GLOBALS **********************************/
+typedef uint64_t Hash_t;
+
+/* ********************************** GLOBAL DECLARATIONS **********************************/
 
 Order_t *order_queue = NULL;
 Order_t *order_queue_tail = NULL;
+
+TrieNode_t *trie_node_pool;
+TrieNode_t *recipes_root, *ingredients_root;
 
 int courier_interval;
 int courier_capacity;
 int current_time = 0;
 int shippable_order_count = 0;
-TrieNode_t *trie_node_pool;
 
 /* ********************************** METHODS **********************************/
+
+// Computes the djb2 hash of a string
+Hash_t djb2_hash_compute(char *str)
+{
+  Hash_t hash = 5381; // black magic f*ckery
+  int c;
+  while ((c = *str++))               // NULL-check, dereference and increment in a trenchcoat
+    hash = ((hash << 5) + hash) + c; // hash * 33 + c
+
+  return hash;
+}
 
 // Replaces malloc for the trie nodes
 trie_id_t trie_malloc()
@@ -126,36 +149,6 @@ void go_to_line_end(FILE *file)
 {
   while (fgetc(file) != '\n' && !feof(file))
     continue;
-}
-
-// Returns a new recipe
-Recipe_t *recipe_create(char *recipe_name)
-{
-#ifdef METRICS
-  numero_ricette++;
-  numero_aggiunte_ricette++;
-#endif
-  Recipe_t *recipe = calloc(sizeof(Recipe_t), 1);
-  recipe->name = strdup(recipe_name);
-  return recipe;
-}
-
-// Deletes a recipe and its ingredients
-void recipe_delete(Recipe_t *recipe)
-{
-#ifdef METRICS
-  numero_ricette--;
-  numero_eliminazioni_ricette++;
-#endif
-  RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
-  while (current_ingredient)
-  {
-    RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
-    free(current_ingredient);
-    current_ingredient = next_ingredient;
-  }
-  free(recipe->name);
-  free(recipe);
 }
 
 // Returns the requested node, creating it recursively if it doesn't exist
@@ -223,11 +216,14 @@ TrieNode_t *trie_node_find_or_create(TrieNode_t *trie_root, char *key, bool crea
 }
 
 // Returns the ingredient, creating it if it doesn't exist
-Ingredient_t *ingredient_find_or_create(TrieNode_t *trie_root, char *key)
+Ingredient_t *ingredient_find_or_create(char *key)
 {
-  TrieNode_t *node = trie_node_find_or_create(trie_root, key, true);
+  TrieNode_t *node = trie_node_find_or_create(ingredients_root, key, true);
   if (!node->dest)
   {
+#ifdef METRICS
+    numero_aggiunte_ingrediente_nuovo++;
+#endif
     node->dest = calloc(sizeof(Ingredient_t), 1);
     // (Implicitly zeroed)
     // ((Ingredient_t *)node->dest)->total_quantity = 0;
@@ -235,10 +231,62 @@ Ingredient_t *ingredient_find_or_create(TrieNode_t *trie_root, char *key)
   return node->dest;
 }
 
+// Deletes a recipe and its ingredients
+RecipeDeleteResult_t recipe_delete(char *recipe_name)
+{
+  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
+  if (!node)
+    return RECIPE_NOT_FOUND;
+  Recipe_t *recipe = node->dest;
+  if (!recipe)
+    return RECIPE_NOT_FOUND;
+  if (recipe->order_count)
+    return RECIPE_HAS_ORDERS;
+
+#ifdef METRICS
+  numero_ricette--;
+  numero_eliminazioni_ricette++;
+#endif
+  RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
+  while (current_ingredient)
+  {
+    RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
+    free(current_ingredient);
+    current_ingredient = next_ingredient;
+  }
+  free(recipe->name);
+  free(recipe);
+  node->dest = NULL;
+  return RECIPE_DELETED;
+}
+
+// Returns the recipe, or NULL if it doesn't exist
+Recipe_t *recipe_find(char *recipe_name)
+{
+  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
+  return node ? node->dest : NULL;
+}
+
+// Adds a new recipe, returning it if it was added and NULL if it already existed
+Recipe_t *recipe_add(char *recipe_name)
+{
+  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, true);
+  if (node->dest)
+    return NULL;
+  node->dest = calloc(sizeof(Recipe_t), 1);
+  ((Recipe_t *)node->dest)->name = strdup(recipe_name);
+
+#ifdef METRICS
+  numero_ricette++;
+  numero_aggiunte_ricette++;
+#endif
+  return node->dest;
+}
+
 // Adds a new lot to the ingredient (sorted by expiration date)
 void ingredient_replenish(TrieNode_t *trie_root, char *key, int quantity, int expiration)
 {
-  Ingredient_t *ingredient = ingredient_find_or_create(trie_root, key);
+  Ingredient_t *ingredient = ingredient_find_or_create(key);
   IngredientLot_t *new_lot = calloc(sizeof(IngredientLot_t), 1);
   new_lot->quantity = quantity;
   new_lot->expiration_time = expiration;
@@ -429,8 +477,6 @@ void courier()
   free(shippable_order_array);
 }
 
-TrieNode_t *recipes_root, *ingredients_root;
-
 /* **************************************************************************************** */
 /*                                      PROGRAM MAIN                                        */
 /* **************************************************************************************** */
@@ -459,13 +505,9 @@ int main()
       numero_comandi_aggiungi_ricetta++;
 #endif
       assert(scanf("%s", recipe_name) == 1);
-      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, true);
-
-      if (!recipe_node->dest)
+      Recipe_t *recipe = recipe_add(recipe_name);
+      if (recipe)
       {
-        Recipe_t *recipe = recipe_create(recipe_name);
-        recipe_node->dest = recipe;
-
         char ingredient_name[256];
         int ingredient_quantity;
         int total_weight = 0;
@@ -478,7 +520,7 @@ int main()
           total_weight += ingredient_quantity;
           *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
           (*current_ingredient)->quantity = ingredient_quantity;
-          (*current_ingredient)->ingredient = ingredient_find_or_create(ingredients_root, ingredient_name);
+          (*current_ingredient)->ingredient = ingredient_find_or_create(ingredient_name);
           current_ingredient = &(*current_ingredient)->next_ingredient;
         }
         // last ingredient ->next_ingredient is already NULL from calloc
@@ -495,20 +537,12 @@ int main()
     else if (!strcmp(token, "rimuovi_ricetta"))
     {
       assert(scanf("%s", recipe_name) == 1);
-      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, recipe_name, false);
-      if (recipe_node && recipe_node->dest)
-      {
-        if (((Recipe_t *)recipe_node->dest)->order_count == 0)
-        {
-          recipe_delete(recipe_node->dest);
-          recipe_node->dest = NULL;
-          puts("rimossa");
-        }
-        else
-          puts("ordini in sospeso");
-      }
-      else
-        puts("non presente");
+      char *result_strings[] = {
+          "rimossa",           // recipe_delete(recipe_name) == RECIPE_DELETED
+          "non presente",      // recipe_delete(recipe_name) == RECIPE_NOT_FOUND
+          "ordini in sospeso", // recipe_delete(recipe_name) == RECIPE_HAS_ORDERS
+      };
+      puts(result_strings[recipe_delete(recipe_name)]);
     }
     else if (!strcmp(token, "rifornimento"))
     {
@@ -531,17 +565,17 @@ int main()
       Order_t *new_order = calloc(sizeof(Order_t), 1);
       char order_recipe_name[256];
       assert(scanf("%s %d", order_recipe_name, &new_order->order_quantity) == 2);
-      TrieNode_t *recipe_node = trie_node_find_or_create(recipes_root, order_recipe_name, false);
-      if (recipe_node && recipe_node->dest)
+      Recipe_t *recipe = recipe_find(order_recipe_name);
+      if (recipe)
       {
-        new_order->recipe = recipe_node->dest;
-        new_order->recipe_name = new_order->recipe->name;
+        new_order->recipe = recipe;
+        new_order->recipe_name = recipe->name;
         new_order->order_time = current_time;
         new_order->state = PENDING;
         // new_order->next_order = NULL; // already zeroed by calloc
         add_order(new_order);
-        new_order->order_weight = new_order->recipe->weight * new_order->order_quantity;
-        new_order->recipe->order_count++;
+        new_order->order_weight = recipe->weight * new_order->order_quantity;
+        recipe->order_count++;
         puts("accettato");
       }
       else
@@ -576,11 +610,12 @@ int main()
     else
       printf("Recipe node %s not found\n", test_keys[i]);
   }
-  printf("Numero ricette finale: %d (%d creazioni, %d eliminazioni, %d aggiungi_ricetta)\nNumero trie nodes (da %lu byte ciascuno): %d, per un totale di %ld KiB\n",
+  printf("Numero ricette finale: %d (%d creazioni, %d eliminazioni, %d aggiungi_ricetta)\nNumero ingredienti aggiunti: %d\nNumero trie nodes (da %lu byte ciascuno): %d, per un totale di %ld KiB\n",
          numero_ricette,
          numero_aggiunte_ricette,
          numero_eliminazioni_ricette,
          numero_comandi_aggiungi_ricetta,
+         numero_aggiunte_ingrediente_nuovo,
          sizeof(TrieNode_t),
          numero_trie_nodes,
          numero_trie_nodes * sizeof(TrieNode_t) / 1024);
