@@ -14,11 +14,6 @@
 #include <assert.h>
 #include <stdint.h>
 
-#ifndef MAX_TRIE_NODES
-// As Bill Gates once said, "${MAX_TRIE_NODES} ought to be enough for anybody"
-#define MAX_TRIE_NODES 115000
-#endif
-
 #define OFFSET_LOWER 0
 #define OFFSET_UPPER 26
 #define OFFSET_DIGIT 52
@@ -31,11 +26,18 @@ int numero_comandi_aggiungi_ricetta = 0;
 int numero_eliminazioni_ricette = 0;
 int numero_trie_nodes = 0;
 int numero_aggiunte_ingrediente_nuovo = 0;
+int numero_collisioni = 0;
 #endif
 
-/* ********************************** TYPE DEFINITIONS **********************************/
+#ifndef MAX_TRIE_NODES
+// As Bill Gates once said, "${MAX_TRIE_NODES} ought to be enough for anybody"
+#define MAX_TRIE_NODES 200
+#endif
 
-typedef uint32_t trie_id_t;
+// Prime number for the hash table size
+#define RECIPE_HT_BUCKET_COUNT 92233
+
+/* ********************************** TYPE DEFINITIONS **********************************/
 
 typedef enum OrderState
 {
@@ -82,13 +84,18 @@ typedef struct __attribute__((packed)) RecipeIngredient
   int uses;
 } RecipeIngredient_t;
 
-typedef struct __attribute__((packed)) Recipe
+typedef struct Recipe
 {
   int weight;
   int order_count;
   char *name;
   RecipeIngredient_t *ingredients_list;
+  struct Recipe *next_recipe;
 } Recipe_t;
+
+/* ********************************** TRIE **********************************/
+
+typedef uint32_t trie_id_t;
 
 typedef struct __attribute__((packed)) ChildField
 {
@@ -101,6 +108,8 @@ typedef struct __attribute__((packed)) TrieNode
   ChildField_t children[26 * 2 + 10 + 1]; // [a-zA-Z0-9_]
 } TrieNode_t;
 
+/* ********************************** HASH TABLE **********************************/
+
 typedef uint64_t Hash_t;
 
 /* ********************************** GLOBAL DECLARATIONS **********************************/
@@ -109,7 +118,9 @@ Order_t *order_queue = NULL;
 Order_t *order_queue_tail = NULL;
 
 TrieNode_t *trie_node_pool;
-TrieNode_t *recipes_root, *ingredients_root;
+TrieNode_t *ingredients_root;
+
+Recipe_t *recipe_ht[RECIPE_HT_BUCKET_COUNT];
 
 int courier_interval;
 int courier_capacity;
@@ -234,53 +245,106 @@ Ingredient_t *ingredient_find_or_create(char *key)
 // Deletes a recipe and its ingredients
 RecipeDeleteResult_t recipe_delete(char *recipe_name)
 {
-  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
-  if (!node)
-    return RECIPE_NOT_FOUND;
-  Recipe_t *recipe = node->dest;
-  if (!recipe)
-    return RECIPE_NOT_FOUND;
-  if (recipe->order_count)
-    return RECIPE_HAS_ORDERS;
+  // TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
+  // if (!node)
+  //   return RECIPE_NOT_FOUND;
+  // Recipe_t *recipe = node->dest;
+  // if (!recipe)
+  //   return RECIPE_NOT_FOUND;
+  // if (recipe->order_count)
+  //   return RECIPE_HAS_ORDERS;
+
+  Recipe_t *recipe = recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
+  Recipe_t **prev_recipe = &recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
+
+  while (recipe && strcmp(recipe->name, recipe_name))
+  {
+    prev_recipe = &recipe->next_recipe;
+    recipe = recipe->next_recipe;
+  }
 
 #ifdef METRICS
   numero_ricette--;
   numero_eliminazioni_ricette++;
 #endif
-  RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
-  while (current_ingredient)
-  {
-    RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
-    free(current_ingredient);
-    current_ingredient = next_ingredient;
-  }
+
+  // RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
+  // while (current_ingredient)
+  // {
+  //   RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
+  //   free(current_ingredient);
+  //   current_ingredient = next_ingredient;
+  // }
+  // free(recipe->name);
+  // free(recipe);
+  // node->dest = NULL;
+  // return RECIPE_DELETED;
+
+  if (!recipe)
+    return RECIPE_NOT_FOUND;
+  if (recipe->order_count)
+    return RECIPE_HAS_ORDERS;
+
+  *prev_recipe = recipe->next_recipe;
   free(recipe->name);
   free(recipe);
-  node->dest = NULL;
   return RECIPE_DELETED;
 }
 
 // Returns the recipe, or NULL if it doesn't exist
 Recipe_t *recipe_find(char *recipe_name)
 {
-  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
-  return node ? node->dest : NULL;
+  // TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
+  // return node ? node->dest : NULL;
+
+  Recipe_t *recipe = recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
+
+  while (recipe && strcmp(recipe->name, recipe_name))
+    recipe = recipe->next_recipe;
+
+  return recipe;
 }
 
 // Adds a new recipe, returning it if it was added and NULL if it already existed
 Recipe_t *recipe_add(char *recipe_name)
 {
-  TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, true);
-  if (node->dest)
-    return NULL;
-  node->dest = calloc(sizeof(Recipe_t), 1);
-  ((Recipe_t *)node->dest)->name = strdup(recipe_name);
+  //   TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, true);
+  //   if (node->dest)
+  //     return NULL;
+  //   node->dest = calloc(sizeof(Recipe_t), 1);
+  //   ((Recipe_t *)node->dest)->name = strdup(recipe_name);
+  //   return node->dest;
+
+  Hash_t hash = djb2_hash_compute(recipe_name);
+  Recipe_t **recipe = &recipe_ht[hash % RECIPE_HT_BUCKET_COUNT];
 
 #ifdef METRICS
-  numero_ricette++;
-  numero_aggiunte_ricette++;
+  bool already_collided = false;
 #endif
-  return node->dest;
+
+  while (*recipe && strcmp((*recipe)->name, recipe_name))
+  {
+    recipe = &(*recipe)->next_recipe;
+#ifdef METRICS
+    if (!already_collided)
+    {
+      numero_collisioni++;
+      already_collided = true;
+    }
+#endif
+  }
+
+  if (*recipe)
+    return NULL;
+
+  *recipe = calloc(sizeof(Recipe_t), 1);
+  (*recipe)->name = strdup(recipe_name);
+
+#ifdef METRICS
+  numero_aggiunte_ricette++;
+  numero_ricette++;
+#endif
+  return *recipe;
 }
 
 // Adds a new lot to the ingredient (sorted by expiration date)
@@ -484,7 +548,6 @@ void courier()
 int main()
 {
   trie_node_pool = calloc(sizeof(TrieNode_t), MAX_TRIE_NODES);
-  recipes_root = &trie_node_pool[trie_malloc()];
   ingredients_root = &trie_node_pool[trie_malloc()];
   char recipe_name[256];
   char token[64];
@@ -597,19 +660,6 @@ int main()
   }
 
 #ifdef METRICS
-  char *test_keys[] = {
-      "Z81OlQgP8Q", // this one should have been deleted
-      "Z81OlQb5e",
-      "missing", // missing keys in the trie don't even get printed
-  };
-  for (unsigned int i = 0; i < sizeof(test_keys) / sizeof(test_keys[0]); i++)
-  {
-    TrieNode_t *node = trie_node_find_or_create(recipes_root, test_keys[i], false);
-    if (node)
-      printf("Address of recipe node %s: %p - exists: %s (at %p)\n", test_keys[i], node, node->dest ? "yes" : "no", node->dest);
-    else
-      printf("Recipe node %s not found\n", test_keys[i]);
-  }
   printf("Numero ricette finale: %d (%d creazioni, %d eliminazioni, %d aggiungi_ricetta)\nNumero ingredienti aggiunti: %d\nNumero trie nodes (da %lu byte ciascuno): %d, per un totale di %ld KiB\n",
          numero_ricette,
          numero_aggiunte_ricette,
@@ -619,6 +669,8 @@ int main()
          sizeof(TrieNode_t),
          numero_trie_nodes,
          numero_trie_nodes * sizeof(TrieNode_t) / 1024);
+  printf("Dimensione della tabella hash delle ricette: %ld KiB (%d bucket)\n", RECIPE_HT_BUCKET_COUNT * sizeof(Recipe_t) / 1024, RECIPE_HT_BUCKET_COUNT);
+  printf("Numero collisioni nelle aggiunte delle ricette: %d\n", numero_collisioni);
 #endif
 
   return 0;
