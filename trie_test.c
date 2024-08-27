@@ -73,6 +73,7 @@ typedef struct __attribute__((packed)) IngredientLot
 typedef struct __attribute__((packed)) Ingredient
 {
   int total_quantity;
+  int last_expired_check_time;
   struct IngredientLot *lot_list;
 } Ingredient_t;
 
@@ -158,7 +159,7 @@ trie_id_t trie_malloc()
 // Skips to the end of the line in the file
 void go_to_line_end(FILE *file)
 {
-  while (fgetc(file) != '\n' && !feof(file))
+  while (getchar_unlocked() != '\n' && !feof(file))
     continue;
 }
 
@@ -245,15 +246,6 @@ Ingredient_t *ingredient_find_or_create(char *key)
 // Deletes a recipe and its ingredients
 RecipeDeleteResult_t recipe_delete(char *recipe_name)
 {
-  // TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
-  // if (!node)
-  //   return RECIPE_NOT_FOUND;
-  // Recipe_t *recipe = node->dest;
-  // if (!recipe)
-  //   return RECIPE_NOT_FOUND;
-  // if (recipe->order_count)
-  //   return RECIPE_HAS_ORDERS;
-
   Recipe_t *recipe = recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
   Recipe_t **prev_recipe = &recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
 
@@ -267,18 +259,6 @@ RecipeDeleteResult_t recipe_delete(char *recipe_name)
   numero_ricette--;
   numero_eliminazioni_ricette++;
 #endif
-
-  // RecipeIngredient_t *current_ingredient = recipe->ingredients_list;
-  // while (current_ingredient)
-  // {
-  //   RecipeIngredient_t *next_ingredient = current_ingredient->next_ingredient;
-  //   free(current_ingredient);
-  //   current_ingredient = next_ingredient;
-  // }
-  // free(recipe->name);
-  // free(recipe);
-  // node->dest = NULL;
-  // return RECIPE_DELETED;
 
   if (!recipe)
     return RECIPE_NOT_FOUND;
@@ -294,9 +274,6 @@ RecipeDeleteResult_t recipe_delete(char *recipe_name)
 // Returns the recipe, or NULL if it doesn't exist
 Recipe_t *recipe_find(char *recipe_name)
 {
-  // TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, false);
-  // return node ? node->dest : NULL;
-
   Recipe_t *recipe = recipe_ht[djb2_hash_compute(recipe_name) % RECIPE_HT_BUCKET_COUNT];
 
   while (recipe && strcmp(recipe->name, recipe_name))
@@ -308,13 +285,6 @@ Recipe_t *recipe_find(char *recipe_name)
 // Adds a new recipe, returning it if it was added and NULL if it already existed
 Recipe_t *recipe_add(char *recipe_name)
 {
-  //   TrieNode_t *node = trie_node_find_or_create(recipes_root, recipe_name, true);
-  //   if (node->dest)
-  //     return NULL;
-  //   node->dest = calloc(sizeof(Recipe_t), 1);
-  //   ((Recipe_t *)node->dest)->name = strdup(recipe_name);
-  //   return node->dest;
-
   Hash_t hash = djb2_hash_compute(recipe_name);
   Recipe_t **recipe = &recipe_ht[hash % RECIPE_HT_BUCKET_COUNT];
 
@@ -400,8 +370,13 @@ bool check_and_fill_order(Order_t *order)
 
   for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
   {
-    clear_expired_lots(current_recipe_ingredient->ingredient);
-    if (current_recipe_ingredient->ingredient->total_quantity < current_recipe_ingredient->quantity * order->order_quantity)
+    Ingredient_t *current_ingredient = current_recipe_ingredient->ingredient;
+    if (current_ingredient->last_expired_check_time != current_time)
+    {
+      clear_expired_lots(current_ingredient);
+      current_ingredient->last_expired_check_time = current_time;
+    }
+    if (current_ingredient->total_quantity < current_recipe_ingredient->quantity * order->order_quantity)
       return false;
   }
 
@@ -559,7 +534,6 @@ int main()
   assert(scanf("%d %d ", &courier_interval, &courier_capacity) == 2);
 
   // MAIN EVENT LOOP ****************************************************************************************
-  // TODO: expedite reading commands by only comparing the first character of the token
   while (scanf("%s", token) == 1)
   {
     if (!strcmp(token, "aggiungi_ricetta"))
@@ -577,16 +551,16 @@ int main()
 
         // scan ingredients and append them to the recipe cascadingly
         RecipeIngredient_t **current_ingredient = &recipe->ingredients_list;
-        while (fgetc(file) != '\n') // always consumes one character, presumably whitespace
+        while (getchar_unlocked() != '\n') // always consumes one character, presumably whitespace
         {
-          assert(scanf("%s %d", ingredient_name, &ingredient_quantity) == 2); // last whitespace stays in the buffer for fgetc to read
+          assert(scanf("%s %d", ingredient_name, &ingredient_quantity) == 2); // last whitespace stays in the buffer for getchar_unlocked to read
           total_weight += ingredient_quantity;
           *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
           (*current_ingredient)->quantity = ingredient_quantity;
           (*current_ingredient)->ingredient = ingredient_find_or_create(ingredient_name);
           current_ingredient = &(*current_ingredient)->next_ingredient;
         }
-        // last ingredient ->next_ingredient is already NULL from calloc
+        *current_ingredient = NULL;
 
         recipe->weight = total_weight;
         puts("aggiunta");
@@ -609,7 +583,7 @@ int main()
     }
     else if (!strcmp(token, "rifornimento"))
     {
-      while (fgetc(file) != '\n')
+      while (getchar_unlocked() != '\n')
       {
         char ingredient_name[256];
         int ingredient_quantity;
@@ -625,7 +599,7 @@ int main()
     }
     else if (!strcmp(token, "ordine"))
     {
-      Order_t *new_order = calloc(sizeof(Order_t), 1);
+      Order_t *new_order = malloc(sizeof(Order_t));
       char order_recipe_name[256];
       assert(scanf("%s %d", order_recipe_name, &new_order->order_quantity) == 2);
       Recipe_t *recipe = recipe_find(order_recipe_name);
@@ -635,7 +609,7 @@ int main()
         new_order->recipe_name = recipe->name;
         new_order->order_time = current_time;
         new_order->state = PENDING;
-        // new_order->next_order = NULL; // already zeroed by calloc
+        new_order->next_order = NULL;
         add_order(new_order);
         new_order->order_weight = recipe->weight * new_order->order_quantity;
         recipe->order_count++;
@@ -646,11 +620,6 @@ int main()
         free(new_order);
         puts("rifiutato");
       }
-      go_to_line_end(file);
-    }
-    else
-    {
-      printf("non implementato: %s\n", token);
       go_to_line_end(file);
     }
 

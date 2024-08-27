@@ -4,6 +4,7 @@
         "text_encoding": "c",
         "typeinfo": "c",
         "stdint.h": "c",
-        "assert.h": "c"
+        "assert.h": "c",
+        "stdio.h": "c"
     }
 }
