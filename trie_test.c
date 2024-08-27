@@ -624,7 +624,7 @@ int main()
     }
 
     current_time++;
-    if (current_time % courier_interval == 0 && current_time != 0)
+    if (!(current_time % courier_interval) && current_time)
       courier();
   }
 
