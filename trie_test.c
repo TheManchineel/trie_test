@@ -29,13 +29,24 @@ int numero_aggiunte_ingrediente_nuovo = 0;
 int numero_collisioni = 0;
 #endif
 
+/*****
+"Quando giocavi a pallone per la strada
+ Prima di tradir la fidanzata
+ Prima di mollare la scuola
+ Prima di fuggire di casa
+ Eravamo bimbi
+ Eravamo bimbi
+ Per fare dindi, eravamo bimbi."
+-- Tedua, "Lo-fi for U"
+                                                                  *****/
+
 #ifndef MAX_TRIE_NODES
 // As Bill Gates once said, "${MAX_TRIE_NODES} ought to be enough for anybody"
 #define MAX_TRIE_NODES 200
 #endif
 
 // Prime number for the hash table size
-#define RECIPE_HT_BUCKET_COUNT 92233
+#define RECIPE_HT_BUCKET_COUNT 3001
 
 /* ********************************** TYPE DEFINITIONS **********************************/
 
@@ -92,6 +103,9 @@ typedef struct Recipe
   char *name;
   RecipeIngredient_t *ingredients_list;
   struct Recipe *next_recipe;
+#ifdef METRICS
+  bool used;
+#endif
 } Recipe_t;
 
 /* ********************************** TRIE **********************************/
@@ -338,7 +352,12 @@ void ingredient_replenish(TrieNode_t *trie_root, char *key, int quantity, int ex
     ingredient->lot_list = new_lot;
     return;
   }
-  else
+  else if (ingredient->lot_list->expiration_time == expiration)
+  {
+    ingredient->lot_list->quantity += quantity;
+    return;
+  }
+  else // ingredient->lot_list->expiration_time < expiration
   {
     IngredientLot_t *current = ingredient->lot_list;
     while (current->next_lot && current->next_lot->expiration_time <= expiration)
@@ -367,9 +386,12 @@ void clear_expired_lots(Ingredient_t *ingredient)
 bool check_and_fill_order(Order_t *order)
 {
   Recipe_t *order_recipe = order->recipe;
+  bool first_iteration;
 
-  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  first_iteration = true;
+  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient != order_recipe->ingredients_list || first_iteration; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
   {
+    first_iteration = false;
     Ingredient_t *current_ingredient = current_recipe_ingredient->ingredient;
     if (current_ingredient->last_expired_check_time != current_time)
     {
@@ -377,11 +399,17 @@ bool check_and_fill_order(Order_t *order)
       current_ingredient->last_expired_check_time = current_time;
     }
     if (current_ingredient->total_quantity < current_recipe_ingredient->quantity * order->order_quantity)
+    {
+      // optimize by setting the failed ingredient as the first one
+      order_recipe->ingredients_list = current_recipe_ingredient; // circular linked list
       return false;
+    }
   }
 
-  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
+  first_iteration = true;
+  for (RecipeIngredient_t *current_recipe_ingredient = order_recipe->ingredients_list; current_recipe_ingredient != order_recipe->ingredients_list || first_iteration; current_recipe_ingredient = current_recipe_ingredient->next_ingredient)
   {
+    first_iteration = false;
     int quantity_needed = current_recipe_ingredient->quantity * order->order_quantity;
     Ingredient_t *ingredient = current_recipe_ingredient->ingredient;
 
@@ -551,6 +579,7 @@ int main()
 
         // scan ingredients and append them to the recipe cascadingly
         RecipeIngredient_t **current_ingredient = &recipe->ingredients_list;
+        RecipeIngredient_t *first_ingredient = NULL;
         while (getchar_unlocked() != '\n') // always consumes one character, presumably whitespace
         {
           assert(scanf("%s %d", ingredient_name, &ingredient_quantity) == 2); // last whitespace stays in the buffer for getchar_unlocked to read
@@ -558,9 +587,11 @@ int main()
           *current_ingredient = calloc(sizeof(RecipeIngredient_t), 1);
           (*current_ingredient)->quantity = ingredient_quantity;
           (*current_ingredient)->ingredient = ingredient_find_or_create(ingredient_name);
+          if (!first_ingredient)
+            first_ingredient = *current_ingredient;
           current_ingredient = &(*current_ingredient)->next_ingredient;
         }
-        *current_ingredient = NULL;
+        *current_ingredient = first_ingredient; // circular linked list
 
         recipe->weight = total_weight;
         puts("aggiunta");
